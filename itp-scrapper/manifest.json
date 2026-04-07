@@ -1,0 +1,19 @@
+{
+  "name": "ITP Scrapper",
+  "description": "Scrape Google Maps business listings and export results as CSV or JSON.",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "permissions": ["activeTab", "scripting", "downloads", "storage"],
+  "host_permissions": ["https://www.google.com/maps/*"],
+  "action": {
+    "default_title": "ITP Scrapper",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.google.com/maps/*"],
+      "js": ["utils.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

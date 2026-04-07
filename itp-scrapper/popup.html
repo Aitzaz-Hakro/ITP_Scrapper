@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ITP Scrapper</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="theme-dark">
+    <main class="app">
+      <header class="app-header">
+        <div>
+          <h1>ITP Scrapper</h1>
+          <p class="subtitle">Google Maps Business Extractor</p>
+        </div>
+        <button id="themeToggle" class="ghost-btn" type="button" title="Toggle theme">Theme</button>
+      </header>
+
+      <section class="status-card">
+        <div class="status-row">
+          <span>Status</span>
+          <span id="statusBadge" class="badge idle">Idle</span>
+        </div>
+        <p id="statusText" class="status-text">Ready to scrape Google Maps listings.</p>
+        <p id="progressText" class="progress-text">Scraped 0 businesses</p>
+      </section>
+
+      <section class="control-card">
+        <label for="limitInput">Business Limit</label>
+        <input id="limitInput" type="number" min="1" max="500" value="100" />
+
+        <label for="exportFormat">Export Format</label>
+        <select id="exportFormat">
+          <option value="csv">CSV</option>
+          <option value="json">JSON</option>
+          <option value="both">CSV + JSON</option>
+        </select>
+
+        <div class="btn-row">
+          <button id="startBtn" class="primary-btn" type="button">Start Scraping</button>
+          <button id="stopBtn" class="danger-btn" type="button" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section class="log-card">
+        <div class="log-head">
+          <h2>Live Logs</h2>
+          <button id="clearLogsBtn" class="ghost-btn" type="button">Clear</button>
+        </div>
+        <div id="logPanel" class="log-panel" role="log" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <script src="utils.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
