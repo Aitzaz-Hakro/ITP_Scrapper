@@ -21,20 +21,66 @@
       .trim();
   }
 
-  function cleanField(value) {
-    return normalizeText(value).replace(/,/g, " ");
+  function cleanText(value) {
+    return normalizeText(value);
   }
 
-  function getFirstElement(selectors, root = document) {
+  function cleanPhone(value) {
+    let phone = cleanText(value)
+      .replace(/^phone:\s*/i, "")
+      .replace(/\s+/g, "")
+      .replace(/[()\-.]/g, "")
+      .replace(/[^\d+]/g, "");
+
+    if (phone.startsWith("00")) {
+      phone = `+${phone.slice(2)}`;
+    }
+
+    if (phone.includes("+")) {
+      phone = `+${phone.replace(/\+/g, "")}`;
+    }
+
+    return phone;
+  }
+
+  function cleanAddress(value) {
+    return cleanText(value)
+      .replace(/^address:\s*/i, "")
+      .replace(/\s*\u00b7\s*/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  function safeQuerySelector(selectors, root = document) {
     if (!selectors) return null;
 
     const list = Array.isArray(selectors) ? selectors : [selectors];
     for (const selector of list) {
-      const element = root.querySelector(selector);
-      if (element) return element;
+      try {
+        const element = root.querySelector(selector);
+        if (element) return element;
+      } catch {
+        // Ignore invalid dynamic selector and continue.
+      }
     }
 
     return null;
+  }
+
+  function safeQuerySelectorAll(selectors, root = document) {
+    if (!selectors) return [];
+
+    const list = Array.isArray(selectors) ? selectors : [selectors];
+    for (const selector of list) {
+      try {
+        const elements = [...root.querySelectorAll(selector)];
+        if (elements.length) return elements;
+      } catch {
+        // Ignore invalid dynamic selector and continue.
+      }
+    }
+
+    return [];
   }
 
   function getTextFromElement(element) {
@@ -49,13 +95,13 @@
   }
 
   function getFirstText(selectors, root = document) {
-    const element = getFirstElement(selectors, root);
-    return cleanField(getTextFromElement(element));
+    const element = safeQuerySelector(selectors, root);
+    return cleanText(getTextFromElement(element));
   }
 
   async function waitForElement(selectors, options = {}) {
     const { root = document, timeout = 10000 } = options;
-    const existing = getFirstElement(selectors, root);
+    const existing = safeQuerySelector(selectors, root);
     if (existing) return existing;
 
     return new Promise((resolve) => {
@@ -70,7 +116,7 @@
       };
 
       const observer = new MutationObserver(() => {
-        const found = getFirstElement(selectors, root);
+        const found = safeQuerySelector(selectors, root);
         if (found) finish(found);
       });
 
@@ -85,12 +131,18 @@
 
   function extractEmails(text) {
     const source = String(text || "");
-    const results = source.match(EMAIL_REGEX) || [];
-    const cleaned = results
+    const matches = source.match(EMAIL_REGEX) || [];
+
+    const cleaned = matches
       .map((email) => email.trim().toLowerCase())
-      .filter((email) => email && !email.endsWith(".png") && !email.endsWith(".jpg"));
+      .filter((email) => email && !email.endsWith(".png") && !email.endsWith(".jpg") && !email.endsWith(".jpeg"));
 
     return [...new Set(cleaned)];
+  }
+
+  function extractEmailFromHTML(html) {
+    const matches = extractEmails(html);
+    return matches[0] || "";
   }
 
   function uniqueBy(items, keyFn) {
@@ -105,7 +157,7 @@
   }
 
   function escapeCsvCell(value) {
-    const text = normalizeText(value);
+    const text = cleanText(value);
     const escaped = text.replace(/"/g, '""');
     return `"${escaped}"`;
   }
@@ -117,26 +169,18 @@
       ["rating", "Rating"],
       ["address", "Address"],
       ["email", "Email"],
-      ["phone", "Phone Number"],
-      ["website", "Website URL"],
-      ["lastReview", "Last Review Text"],
+      ["phone", "Phone"],
+      ["website", "Website"],
+      ["lastReview", "Last Review"],
     ];
 
     const headerLine = headerEntries.map((entry) => escapeCsvCell(entry[1])).join(",");
-
-    const bodyLines = safeRows.map((row) =>
-      headerEntries
-        .map(([key]) => {
-          return escapeCsvCell(row[key] || "");
-        })
-        .join(",")
-    );
+    const bodyLines = safeRows.map((row) => headerEntries.map(([key]) => escapeCsvCell(row[key] || "")).join(","));
 
     return [headerLine, ...bodyLines].join("\n");
   }
 
-  function downloadBlob(content, filename, mimeType) {
-    const blob = new Blob([content], { type: mimeType });
+  function triggerDownloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -146,6 +190,16 @@
     link.remove();
 
     setTimeout(() => URL.revokeObjectURL(url), 2500);
+  }
+
+  function downloadCsv(csv, filename = "itp_scrapper_data.csv") {
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    triggerDownloadBlob(blob, filename);
+  }
+
+  function downloadBlob(content, filename, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    triggerDownloadBlob(blob, filename);
   }
 
   function parsePlaceKeyFromUrl(url) {
@@ -176,15 +230,22 @@
 
   window.ITPUtils = {
     sleep,
-    cleanField,
     normalizeText,
-    getFirstElement,
+    cleanText,
+    cleanField: cleanText,
+    cleanPhone,
+    cleanAddress,
+    safeQuerySelector,
+    safeQuerySelectorAll,
+    getFirstElement: safeQuerySelector,
     getFirstText,
     getTextFromElement,
     waitForElement,
     extractEmails,
+    extractEmailFromHTML,
     uniqueBy,
     toCsv,
+    downloadCsv,
     downloadBlob,
     parsePlaceKeyFromUrl,
     withTimeout,

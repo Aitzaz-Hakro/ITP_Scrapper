@@ -20,10 +20,14 @@
 
   window.__ITP_SCRAPPER_STATE__ = state;
 
+  const ACTION_DELAY_MIN = 800;
+  const ACTION_DELAY_MAX = 1500;
+
   const SELECTORS = {
     listingFeed: [
       'div[role="feed"]',
       'div[aria-label*="Results"][role="feed"]',
+      'div[aria-label*="results"][role="feed"]',
       'div[aria-label*="Results"] div[role="feed"]',
     ],
     listingLinks: ['a[href*="/maps/place/"]'],
@@ -36,6 +40,7 @@
     addressButton: [
       'button[data-item-id="address"]',
       'button[aria-label^="Address:"]',
+      'div[role="main"] button[data-item-id="address"]',
       'div[role="main"] [data-item-id="address"]',
     ],
     phoneButton: [
@@ -48,20 +53,21 @@
       'a[data-item-id*="authority"]',
       'a[aria-label^="Website:"]',
     ],
+    inlineReview: [
+      'div[role="main"] div[data-review-id] span.wiI7pd',
+      'div[role="main"] span.wiI7pd',
+      'div[role="main"] div.MyEned',
+    ],
     reviewsButton: [
       'button[aria-label*="reviews"]',
       'button[jsaction*="pane.reviewChart.moreReviews"]',
       'button[data-tab-index="1"]',
     ],
-    reviewsDialog: [
-      'div[role="dialog"]',
-      'div.m6QErb[aria-label*="Reviews"]',
-      'div[aria-label*="Reviews"]',
-    ],
+    reviewsDialog: ['div[role="dialog"]', 'div.m6QErb[aria-label*="Reviews"]', 'div[aria-label*="Reviews"]'],
     reviewText: [
-      'div[role="dialog"] span.wiI7pd',
-      'div[role="dialog"] div.MyEned',
+      'div[role="dialog"] div[data-review-id] span.wiI7pd',
       'div[role="dialog"] div[data-review-id] span',
+      'div[role="dialog"] div.MyEned',
     ],
   };
 
@@ -73,12 +79,21 @@
     });
   }
 
-  function addLog(message) {
+  function addLog(message, level = "info") {
     const line = `${new Date().toLocaleTimeString()} - ${message}`;
     state.logs.push(line);
     if (state.logs.length > 200) {
       state.logs = state.logs.slice(-200);
     }
+
+    if (level === "error") {
+      console.error(`[ITP Scrapper] ${line}`);
+    } else if (level === "warn") {
+      console.warn(`[ITP Scrapper] ${line}`);
+    } else {
+      console.log(`[ITP Scrapper] ${line}`);
+    }
+
     sendRuntime("SCRAPE_LOG", { log: line });
   }
 
@@ -104,7 +119,7 @@
   }
 
   function getListingFeed() {
-    return ITPUtils.getFirstElement(SELECTORS.listingFeed);
+    return ITPUtils.safeQuerySelector(SELECTORS.listingFeed);
   }
 
   function getListingAnchors(feed) {
@@ -130,12 +145,15 @@
     if (!anchor) return false;
 
     try {
+      const listingTitle = ITPUtils.cleanText(anchor.getAttribute("aria-label") || anchor.innerText || "Listing");
+      addLog(`Clicking listing: ${listingTitle}`);
       anchor.scrollIntoView({ behavior: "smooth", block: "center" });
-      await ITPUtils.sleep(250, 550);
+      await ITPUtils.sleep(ACTION_DELAY_MIN, ACTION_DELAY_MAX);
       anchor.click();
-      await ITPUtils.sleep(700, 1200);
+      await ITPUtils.sleep(ACTION_DELAY_MIN, ACTION_DELAY_MAX);
       return true;
-    } catch {
+    } catch (error) {
+      addLog(`Failed to click listing: ${error.message || "Unknown error"}`, "warn");
       return false;
     }
   }
@@ -144,13 +162,13 @@
     for (let i = 0; i < 18; i += 1) {
       const name = ITPUtils.getFirstText(SELECTORS.detailName);
       if (name) return true;
-      await ITPUtils.sleep(200, 350);
+      await ITPUtils.sleep(350, 700);
     }
     return false;
   }
 
   function getRatingValue() {
-    const ratingElement = ITPUtils.getFirstElement(SELECTORS.rating);
+    const ratingElement = ITPUtils.safeQuerySelector(SELECTORS.rating);
     if (!ratingElement) return "";
 
     const source =
@@ -160,103 +178,144 @@
       "";
 
     const valueMatch = source.match(/[0-9]+([.,][0-9]+)?/);
-    return ITPUtils.cleanField(valueMatch ? valueMatch[0].replace(",", ".") : source);
+    return ITPUtils.cleanText(valueMatch ? valueMatch[0].replace(",", ".") : source);
   }
 
-  function readFieldFromAriaPrefix(element, prefix) {
+  function readAriaValue(element, prefix) {
     if (!element) return "";
     const aria = element.getAttribute("aria-label") || "";
-    if (!aria.toLowerCase().startsWith(prefix.toLowerCase())) {
-      return ITPUtils.cleanField(aria || ITPUtils.getTextFromElement(element));
-    }
-    return ITPUtils.cleanField(aria.slice(prefix.length));
+    if (!aria) return "";
+
+    return ITPUtils.cleanText(aria.replace(new RegExp(`^${prefix}\\s*`, "i"), ""));
   }
 
   function extractAddress() {
-    const button = ITPUtils.getFirstElement(SELECTORS.addressButton);
+    const button = ITPUtils.safeQuerySelector(SELECTORS.addressButton);
     if (!button) return "";
 
-    const child = button.querySelector(".fontBodyMedium") || button.querySelector("div") || button;
-    const value = ITPUtils.getTextFromElement(child);
+    const candidates = [];
 
-    if (value) return ITPUtils.cleanField(value);
-    return readFieldFromAriaPrefix(button, "Address:");
+    const explicitValueNode =
+      button.querySelector(".fontBodyMedium") ||
+      button.querySelector('[class*="fontBodyMedium"]') ||
+      button.querySelector("div");
+
+    if (explicitValueNode) {
+      candidates.push(explicitValueNode.textContent || "");
+    }
+
+    const ariaAddress = readAriaValue(button, "Address:");
+    if (ariaAddress) {
+      candidates.push(ariaAddress);
+    }
+
+    candidates.push(button.textContent || "");
+
+    for (const candidate of candidates) {
+      const cleaned = ITPUtils.cleanAddress(candidate);
+      if (cleaned) {
+        return cleaned;
+      }
+    }
+
+    return "";
   }
 
   function extractPhone() {
-    const button = ITPUtils.getFirstElement(SELECTORS.phoneButton);
+    const button = ITPUtils.safeQuerySelector(SELECTORS.phoneButton);
     if (!button) return "";
 
-    const value = ITPUtils.getTextFromElement(button);
-    if (value) return ITPUtils.cleanField(value);
+    const fromAria = readAriaValue(button, "Phone:");
+    if (fromAria) {
+      return ITPUtils.cleanPhone(fromAria);
+    }
 
-    return readFieldFromAriaPrefix(button, "Phone:");
+    return ITPUtils.cleanPhone(button.textContent || "");
   }
 
   function extractWebsite() {
-    const websiteElement = ITPUtils.getFirstElement(SELECTORS.websiteLink);
+    const websiteElement = ITPUtils.safeQuerySelector(SELECTORS.websiteLink);
     if (!websiteElement) return "";
 
     const href = websiteElement.getAttribute("href") || "";
     if (href.startsWith("http")) {
-      return ITPUtils.cleanField(href);
+      return ITPUtils.cleanText(href);
     }
 
-    return ITPUtils.cleanField(readFieldFromAriaPrefix(websiteElement, "Website:"));
+    return ITPUtils.cleanText(readAriaValue(websiteElement, "Website:"));
   }
 
   function extractEmailFromDetailsPanel() {
     const mailto = document.querySelector('a[href^="mailto:"]');
     if (mailto) {
-      return ITPUtils.cleanField((mailto.getAttribute("href") || "").replace(/^mailto:/i, ""));
+      return ITPUtils.cleanText((mailto.getAttribute("href") || "").replace(/^mailto:/i, ""));
     }
 
     const mainPanel = document.querySelector('div[role="main"]');
     const panelText = mainPanel ? mainPanel.innerText : "";
-    const emails = ITPUtils.extractEmails(panelText);
-    return emails[0] || "";
+
+    return ITPUtils.extractEmailFromHTML(panelText);
   }
 
   async function extractEmailFromWebsite(websiteUrl) {
     if (!websiteUrl || !/^https?:\/\//i.test(websiteUrl)) return "";
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
     try {
-      const response = await fetch(websiteUrl, {
-        method: "GET",
-        signal: controller.signal,
-        redirect: "follow",
-        credentials: "omit",
-      });
+      const response = await ITPUtils.withTimeout(
+        fetch(websiteUrl, {
+          method: "GET",
+          redirect: "follow",
+          credentials: "omit",
+          mode: "cors",
+        }),
+        8000
+      );
 
-      if (!response.ok) return "";
-      const html = await response.text();
-      const emails = ITPUtils.extractEmails(html);
-      return emails[0] || "";
-    } catch {
+      if (!response.ok) {
+        addLog(`Website fetch failed (${response.status}) for email extraction.`, "warn");
+        return "";
+      }
+
+      const html = await ITPUtils.withTimeout(response.text(), 6000);
+      return ITPUtils.extractEmailFromHTML(html);
+    } catch (error) {
+      addLog(`Email extraction fallback triggered (${error.message || "CORS/Timeout"}).`, "warn");
       return "";
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
+  function getFirstVisibleReviewText(dialog) {
+    const reviewElements = ITPUtils.safeQuerySelectorAll(SELECTORS.reviewText, dialog);
+    for (const node of reviewElements) {
+      const rect = node.getBoundingClientRect();
+      const text = ITPUtils.cleanText(node.textContent || node.innerText || "");
+      if (rect.width > 0 && rect.height > 0 && text) {
+        return text;
+      }
+    }
+    return "";
+  }
+
   async function extractLatestVisibleReview() {
-    const reviewsButton = ITPUtils.getFirstElement(SELECTORS.reviewsButton);
+    const inlineReview = ITPUtils.getFirstText(SELECTORS.inlineReview);
+    if (inlineReview) {
+      return ITPUtils.cleanText(inlineReview);
+    }
+
+    const reviewsButton = ITPUtils.safeQuerySelector(SELECTORS.reviewsButton);
     if (!reviewsButton) return "";
 
     try {
       reviewsButton.click();
-      await ITPUtils.sleep(1000, 1400);
+      await ITPUtils.sleep(ACTION_DELAY_MIN, ACTION_DELAY_MAX);
 
-      const dialog = await ITPUtils.waitForElement(SELECTORS.reviewsDialog, { timeout: 4500 });
+      const dialog = await ITPUtils.waitForElement(SELECTORS.reviewsDialog, { timeout: 5000 });
       if (!dialog) return "";
 
-      dialog.scrollBy({ top: 300, behavior: "smooth" });
-      await ITPUtils.sleep(500, 900);
+      dialog.scrollBy({ top: 320, behavior: "smooth" });
+      await ITPUtils.sleep(800, 1200);
 
-      const reviewText = ITPUtils.getFirstText(SELECTORS.reviewText);
+      const reviewText = getFirstVisibleReviewText(dialog);
 
       const closeButton = dialog.querySelector('button[aria-label="Close"]');
       if (closeButton) {
@@ -265,10 +324,10 @@
         document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       }
 
-      await ITPUtils.sleep(300, 600);
-
-      return ITPUtils.cleanField(reviewText);
-    } catch {
+      await ITPUtils.sleep(350, 700);
+      return ITPUtils.cleanText(reviewText);
+    } catch (error) {
+      addLog(`Review extraction failed: ${error.message || "Unknown"}`, "warn");
       return "";
     }
   }
@@ -279,27 +338,27 @@
       return null;
     }
 
-    const name = ITPUtils.getFirstText(SELECTORS.detailName);
-    const rating = getRatingValue();
-    const address = extractAddress();
-    const phone = extractPhone();
-    const website = extractWebsite();
+    const name = ITPUtils.cleanText(ITPUtils.getFirstText(SELECTORS.detailName));
+    const rating = ITPUtils.cleanText(getRatingValue());
+    const address = ITPUtils.cleanAddress(extractAddress());
+    const phone = ITPUtils.cleanPhone(extractPhone());
+    const website = ITPUtils.cleanText(extractWebsite());
 
-    let email = extractEmailFromDetailsPanel();
+    let email = ITPUtils.cleanText(extractEmailFromDetailsPanel());
     if (!email && website) {
-      email = await extractEmailFromWebsite(website);
+      email = ITPUtils.cleanText(await extractEmailFromWebsite(website));
     }
 
-    const lastReview = await extractLatestVisibleReview();
+    const lastReview = ITPUtils.cleanText(await extractLatestVisibleReview());
 
     return {
-      name: ITPUtils.cleanField(name),
-      rating: ITPUtils.cleanField(rating),
-      address: ITPUtils.cleanField(address),
-      email: ITPUtils.cleanField(email),
-      phone: ITPUtils.cleanField(phone),
-      website: ITPUtils.cleanField(website),
-      lastReview: ITPUtils.cleanField(lastReview),
+      name,
+      rating,
+      address,
+      email,
+      phone,
+      website,
+      lastReview,
     };
   }
 
@@ -336,9 +395,13 @@
 
         try {
           const row = await extractBusinessDetails();
-          if (!row) continue;
+          if (!row) {
+            addLog("Skipped listing because detail panel did not fully load.", "warn");
+            continue;
+          }
 
           if (!row.name && !row.address) {
+            addLog("Skipped listing because both name and address were empty.", "warn");
             continue;
           }
 
@@ -348,12 +411,12 @@
           state.rows = results;
           state.progress = results.length;
 
-          addLog(`Scraped ${row.name || "Unknown Business"} (${results.length}/${state.targetLimit})`);
+          addLog(`Extracted data: ${JSON.stringify(row)}`);
           emitProgress();
 
-          await ITPUtils.sleep(650, 1400);
+          await ITPUtils.sleep(ACTION_DELAY_MIN, ACTION_DELAY_MAX);
         } catch (error) {
-          addLog(`Skipped one listing due to parsing issue: ${error.message}`);
+          addLog(`Skipped one listing due to parsing error: ${error.message || "Unknown"}`, "error");
         }
       }
 
@@ -362,8 +425,8 @@
       }
 
       const beforeScrollCount = getListingAnchors(feed).length;
-      feed.scrollBy({ top: Math.max(feed.clientHeight * 0.82, 600), behavior: "smooth" });
-      await ITPUtils.sleep(950, 1500);
+      feed.scrollBy({ top: Math.max(feed.clientHeight * 0.82, 620), behavior: "smooth" });
+      await ITPUtils.sleep(ACTION_DELAY_MIN, ACTION_DELAY_MAX);
 
       const afterScrollCount = getListingAnchors(feed).length;
       if (cycleNewCount === 0 && afterScrollCount <= beforeScrollCount) {
@@ -383,7 +446,7 @@
 
     if (normalizedFormat === "csv" || normalizedFormat === "both") {
       const csv = ITPUtils.toCsv(rows);
-      ITPUtils.downloadBlob(csv, "itp_scrapper_data.csv", "text/csv;charset=utf-8");
+      ITPUtils.downloadCsv(csv, "itp_scrapper_data.csv");
     }
 
     if (normalizedFormat === "json" || normalizedFormat === "both") {
@@ -444,7 +507,7 @@
       };
     } catch (error) {
       setStatus("Error", error.message || "Scraping failed.");
-      addLog(`Error: ${error.message || "Unknown"}`);
+      addLog(`Error: ${error.message || "Unknown"}`, "error");
       return {
         ok: false,
         error: error.message || "Unknown error",
